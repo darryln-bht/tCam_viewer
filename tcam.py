@@ -25,13 +25,17 @@ import json
 import array
 import base64
 import socket
+import numpy as np
 from queue import Queue
 from json import JSONDecodeError
 from threading import Thread, Event
 
+
 from fcntl import ioctl
 from ioctl_numbers import *
 
+default_hardcoded_ipaddress = "192.168.4.1"
+print(f"Using default ip address {default_hardcoded_ipaddress}")
 
 class TCamManagerThreadBase(Thread, metaclass=abc.ABCMeta):
     """
@@ -209,7 +213,8 @@ class TCamManagerThread(TCamManagerThreadBase):
         self.responseQueue.put({"status": "disconnected"})
         if hasattr(self, 'tcamSocket'):
             # handle the case of a shutdown before it gets used, otherwise this becomes an execption in a background thread.
-            self.tcamSocket.close()
+            if self.tcamSocket != None:
+                self.tcamSocket.close()
         self.tcamSocket = None
         self.connected = False
 
@@ -314,7 +319,7 @@ class TCamHwManagerThread(TCamManagerThreadBase):
 ################################################################################
 class TCam:
     """
-    TCam - Interface object for managing a tCam device.
+    TCam - Low-level object for communicating with a tCam device.
     """
 
     def __init__(self, timeout=1, responseTimeout=10, is_hw=False):
@@ -363,7 +368,7 @@ class TCam:
                 sys.exit(-45)
                 
             
-    def connect(self, ipaddress="192.168.4.1", port=5001,
+    def connect(self, ipaddress=default_hardcoded_ipaddress, port=5001,
                 spiFile='/dev/spidev0.0',
                 serialFile='/dev/serial0',
                 baudrate=230400,
@@ -766,3 +771,70 @@ class TCam:
         cmd = {"cmd": "raw", "payload": payload}
         self.cmdQueue.put(cmd)
         return self.responseQueue.get(block=True, timeout=timeout)
+
+class TCamInterface:
+    """
+    TCamInterface - High-level interface for a TCam object.
+    """
+    def __init__(self, enumeratedID = None, ipAddr = None):
+        self.enumeratedID = enumeratedID
+        self.ipAddr = ipAddr
+        self.tcam = TCam(timeout=1, responseTimeout=10, is_hw=False)
+
+    def connect(self):
+        self.tcam.connect(self.ipAddr)
+
+    def disconnect(self):
+        self.tcam.disconnect()
+
+    def shutdown(self):
+        self.tcam.shutdown()
+
+    def getFrame(self):
+        return  self._convert(self.tcam.get_frame())
+
+    def getImage(self):
+        return  self._convert(self.tcam.get_image())
+
+    def startStream(self):
+        self.tcam.start_stream()
+
+    def stopStream(self):
+        self.tcam.stop_stream()
+
+    def getEnumeratedID(self):
+        return self.enumeratedID
+
+    def _convert(self, img):
+        dimg = base64.b64decode(img["radiometric"])
+        ra = array('H', dimg)
+
+        imgmin = 65535
+        imgmax = 0
+        for i in ra:
+            if i < imgmin:
+                imgmin = i
+            if i > imgmax:
+                imgmax = i
+        delta = imgmax - imgmin
+        a = np.zeros((120, 160, 3), np.uint8)
+        for r in range(0, 120):
+            for c in range(0, 160):
+                val = int((ra[(r * 160) + c] - imgmin) * 255 / delta)
+                if val > 255:
+                    a[r, c] = [255, 255, 255]
+                else:
+                    a[r, c] = [val, val, val]
+        return a
+
+
+
+iplist = [default_hardcoded_ipaddress]
+
+def enumerateTCamInterfaces():
+    interfaces = []
+    for ip in iplist:
+        intfc = TCamInterface(ipAddr = ip)
+        interfaces.append(intfc)
+    return interfaces
+    
